@@ -1129,15 +1129,7 @@ class FOFController extends JObject
 		}
 		$model->setState('form_name', $formname);
 
-		$item = $model->getItem();
-
-		if (!($item instanceof FOFTable))
-		{
-			return false;
-		}
-
-		$formData = is_object($item) ? $item->getData() : array();
-		$form = $model->getForm($formData);
+		$form = $model->getForm();
 
 		if ($form !== false)
 		{
