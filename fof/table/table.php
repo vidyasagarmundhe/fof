@@ -25,7 +25,7 @@ if (class_exists('FOFTable', false))
  * @package  FrameworkOnFramework
  * @since    1.0
  */
-class FOFTable extends JObject
+class FOFTable extends JObject implements JTableInterface
 {
 	/**
 	 * Cache array for instances
@@ -82,13 +82,6 @@ class FOFTable extends JObject
 	 * @var    boolean
 	 */
 	protected $_has_tags = false;
-
-	/**
-	 * Tag helper
-	 *
-	 * @var    JHelperTags
-	 */
-	protected $_tagsHelper = null;
 
 	/**
 	 * The rules associated with this record.
@@ -198,6 +191,41 @@ class FOFTable extends JObject
 	 * @var array
 	 */
 	protected static $tableCache = array();
+
+	/**
+	 * An instance of FOFConfigProvider to provision configuration overrides
+	 *
+	 * @var    FOFConfigProvider
+	 */
+	protected $configProvider = null;
+
+	/**
+	 * FOFTableDispatcherBehavior for dealing with extra behaviors
+	 *
+	 * @var    FOFTableDispatcherBehavior
+	 */
+	protected $tableDispatcher = null;
+
+	/**
+	 * List of default behaviors to apply to the table
+	 *
+	 * @var    array
+	 */
+	protected $default_behaviors = array('tags', 'assets');
+
+	/**
+	 * Returns a static object instance of a particular table type
+	 *
+	 * @param   string  $type    The table name
+	 * @param   string  $prefix  The prefix of the table class
+	 * @param   array   $config  Optional configuration variables
+	 *
+	 * @return FOFTable
+	 */
+	public static function getInstance($type, $prefix = 'JTable', $config = array())
+	{
+		return self::getAnInstance($type, $prefix, $config);
+	}
 
 	/**
 	 * Returns a static object instance of a particular table type
@@ -457,6 +485,12 @@ class FOFTable extends JObject
 		}
 		$this->config   = $config;
 
+		// Load the configuration provider
+		$this->configProvider = new FOFConfigProvider;
+
+		// Load the behavior dispatcher
+		$this->tableDispatcher = new FOFTableDispatcherBehavior;
+
 		// Initialise the table properties.
 
 		if ($fields = $this->getTableFields())
@@ -475,6 +509,62 @@ class FOFTable extends JObject
 		else
 		{
 			$this->_tableExists = false;
+		}
+
+		// Get the input
+		if (array_key_exists('input', $config))
+		{
+			if ($config['input'] instanceof FOFInput)
+			{
+				$this->input = $config['input'];
+			}
+			else
+			{
+				$this->input = new FOFInput($config['input']);
+			}
+		}
+		else
+		{
+			$this->input = new FOFInput;
+		}
+
+		// Set the $name/$_name variable
+		$component = $this->input->getCmd('option', 'com_foobar');
+
+		if (array_key_exists('option', $config))
+		{
+			$component = $config['option'];
+		}
+
+		$this->input->set('option', $component);
+
+		// Apply table behaviors
+		$type = explode("_", $this->_tbl);
+		$type = $type[count($type) - 1];
+		
+		$configKey = $component . '.tables.' . FOFInflector::singularize($type) . '.behaviors';
+
+		if (isset($config['behaviors']))
+		{
+			$behaviors = (array) $config['behaviors'];
+		}
+		elseif ($behaviors = $this->configProvider->get($configKey, null))
+		{
+			$behaviors = explode(',', $behaviors);
+		}
+		else
+		{
+			$behaviors = $this->default_behaviors;
+		}
+
+		$behaviors = $this->configProvider->get($configKey, null);
+
+		if (is_array($behaviors) && count($behaviors))
+		{
+			foreach ($behaviors as $behavior)
+			{
+				$this->addBehavior($behavior);
+			}
 		}
 
 		// If we are tracking assets, make sure an access field exists and initially set the default.
@@ -562,6 +652,28 @@ class FOFTable extends JObject
 		}
 	}
 
+	/**
+	 * Adds a behavior to the table
+	 *
+	 * @param   string  $name    The name of the behavior
+	 * @param   array   $config  Optional Behavior configuration
+	 *
+	 * @return  boolean
+	 */
+	public function addBehavior($name, $config = array())
+	{
+
+		$behaviorClass = 'FOFTableBehavior' . ucfirst(strtolower($name));
+
+		if (class_exists($behaviorClass) && $this->tableDispatcher)
+		{
+			$behavior = new $behaviorClass($this->tableDispatcher, $config);
+
+			return true;
+		}
+
+		return false;
+	}
 
 	/**
 	 * Sets the events trigger switch state
@@ -608,12 +720,6 @@ class FOFTable extends JObject
 		if (FOFPlatform::getInstance()->checkVersion(JVERSION, '3.1', 'ge'))
 		{
 			$this->_has_tags = $newState ? true : false;
-
-			if ($this->_has_tags && !$this->_tagsHelper)
-			{
-				$this->_tagsHelper = new JHelperTags();
-				$this->_tagsHelper->typeAlias = $this->_assetKey;
-			}
 		}
 	}
 
@@ -725,7 +831,8 @@ class FOFTable extends JObject
 		{
 			if ($j_query->select && $j_query->select->getElements())
 			{
-				$query->select($this->normalizeSelectFields($j_query->select->getElements(), true));
+				//$query->select($this->normalizeSelectFields($j_query->select->getElements(), true));
+				$query->select($j_query->select->getElements());
 			}
 
 			if ($j_query->join)
@@ -735,7 +842,6 @@ class FOFTable extends JObject
 					$t = (string) $join;
 
 					// Joomla doesn't provide any access to the "name" variable, so I have to work with strings...
-
 					if (stripos($t, 'inner') !== false)
 					{
 						$query->innerJoin($join->getElements());
@@ -1024,26 +1130,9 @@ class FOFTable extends JObject
 			}
 		}
 
-		// Set rules for assets enabled tables
-		if ($this->_trackAssets)
-		{
-			// Bind the rules.
+		$result = $this->onAfterBind($src);
 
-			if (isset($src['rules']) && is_array($src['rules']))
-			{
-				$this->setRules($src['rules']);
-			}
-		}
-
-		// Bind tags
-		if ($this->_has_tags && isset($src['tags']))
-		{
-			$this->metadata = array();
-			$this->metadata['tags'] = $src['tags'];
-			$this->metadata = json_encode($this->metadata);
-		}
-
-		return true;
+		return $result;
 	}
 
 	/**
@@ -1059,11 +1148,6 @@ class FOFTable extends JObject
 	 */
 	public function store($updateNulls = false)
 	{
-		if ($this->_has_tags)
-		{
-			$metadata = $this->metadata;
-		}
-
 		if (!$this->onBeforeStore($updateNulls))
 		{
 			return false;
@@ -1076,44 +1160,10 @@ class FOFTable extends JObject
 			$this->$k = null;
 		}
 
-		$asset_id_field	= $this->getColumnAlias('asset_id');
-		if (in_array($asset_id_field, $this->getKnownFields()))
-		{
-			if (!empty($this->$asset_id_field))
-			{
-				$currentAssetId = $this->$asset_id_field;
-			}
-
-			// The asset id field is managed privately by this class.
-			if ($this->_trackAssets)
-			{
-				unset($this->$asset_id_field);
-			}
-		}
-
-		// Manage tags, if present
-		if ($this->_has_tags)
-		{
-			// TODO: JHelperTags sucks in Joomla! 3.1, it requires that tags are
-			// stored in the metadata property. Not our case, therefore we need
-			// to add it in a fake object. We sent a PR to Joomla! CMS to fix
-			// that. Once it's accepted, we'll have to remove the attrocity
-			// here...
-			$tagsTable = clone($this);
-			$tagsTable->metadata = $metadata;
-			$this->_tagsHelper->preStoreProcess($tagsTable);
-		}
-
 		// Create the object used for inserting/udpating data to the database
 		$fields     = $this->getTableFields();
 		$properties = $this->getKnownFields();
 		$keys       = array();
-
-        // Let's remove the asset_id field, since we unset the property above and we would get a PHP notice
-        if(isset($fields[$asset_id_field]))
-        {
-            unset($fields[$asset_id_field]);
-        }
 
 		foreach ($properties as $property)
 		{
@@ -1149,92 +1199,9 @@ class FOFTable extends JObject
 
 		$this->bind($updateObject);
 
-		// Now the real tags storing process
-		if ($this->_has_tags)
-		{
-			// Check if the content type exists, and create it if it does not
-			$this->checkContentType();
-
-			// TODO: This little guy here fails because JHelperTags
-			// need a JTable object to work, while our is FOFTable
-			// Need probably to write our own FOFHelperTags
-			// Thank you com_tags
-			if (!$this->_tagsHelper->postStoreProcess($tagsTable))
-			{
-				$this->setError('Error storing tags');
-				return false;
-			}
-		}
-
 		if ($this->_locked)
 		{
 			$this->_unlock();
-		}
-
-		/*
-		 * Asset Tracking
-		 */
-		if (in_array($asset_id_field, $this->getKnownFields()) && $this->_trackAssets)
-		{
-			$parentId = $this->_getAssetParentId();
-			$name     = $this->_getAssetName();
-			$title    = $this->_getAssetTitle();
-
-			$asset = JTable::getInstance('Asset', 'JTable', array('dbo' => $this->getDbo()));
-			$asset->loadByName($name);
-
-			// Re-inject the asset id.
-			$this->$asset_id_field = $asset->id;
-
-			// Check for an error.
-			$error = $asset->getError();
-
-			if ($error)
-			{
-				$this->setError($error);
-
-				return false;
-			}
-
-			// Specify how a new or moved node asset is inserted into the tree.
-			if (empty($this->$asset_id_field) || $asset->parent_id != $parentId)
-			{
-				$asset->setLocation($parentId, 'last-child');
-			}
-
-			// Prepare the asset to be stored.
-			$asset->parent_id = $parentId;
-			$asset->name      = $name;
-			$asset->title     = $title;
-
-			if ($this->_rules instanceof JAccessRules)
-			{
-				$asset->rules = (string) $this->_rules;
-			}
-
-			if (!$asset->check() || !$asset->store($updateNulls))
-			{
-				$this->setError($asset->getError());
-
-				return false;
-			}
-
-			// Create an asset_id or heal one that is corrupted.
-			if (empty($this->$asset_id_field) || (($currentAssetId != $this->$asset_id_field) && !empty($this->$asset_id_field)))
-			{
-				// Update the asset_id field in this table.
-				$this->$asset_id_field = (int) $asset->id;
-
-				$query = $this->_db->getQuery(true);
-				$query->update($this->_db->qn($this->_tbl));
-				$query->set('asset_id = ' . (int) $this->$asset_id_field);
-				$query->where($this->_db->qn($k) . ' = ' . (int) $this->$k);
-				$this->_db->setQuery($query);
-
-				$this->_db->execute();
-			}
-
-			$result = true;
 		}
 
 		$result = $this->onAfterStore();
@@ -1676,6 +1643,21 @@ class FOFTable extends JObject
 	 */
 	public function publish($cid = null, $publish = 1, $user_id = 0)
 	{
+		$enabledName   = $this->getColumnAlias('enabled');
+		$locked_byName = $this->getColumnAlias('locked_by');
+
+		// Mhm... you called the publish method on a table without publish support...
+		if(!in_array($enabledName, $this->getKnownFields()))
+		{
+			return false;
+		}
+
+		//We have to cast the id as array, or the helper function will return an empty set
+		if($cid)
+		{
+			$cid = (array) $cid;
+		}
+
 		JArrayHelper::toInteger($cid);
 		$user_id = (int) $user_id;
 		$publish = (int) $publish;
@@ -1700,9 +1682,6 @@ class FOFTable extends JObject
 			return false;
 		}
 
-		$enabledName   = $this->getColumnAlias('enabled');
-		$locked_byName = $this->getColumnAlias('locked_by');
-
 		$query = $this->_db->getQuery(true)
 			->update($this->_db->qn($this->_tbl))
 			->set($this->_db->qn($enabledName) . ' = ' . (int) $publish);
@@ -1717,8 +1696,9 @@ class FOFTable extends JObject
 			);
 		}
 
-		$cids = $this->_db->qn($k) . ' = ' .
-			implode(' OR ' . $this->_db->qn($k) . ' = ', $cid);
+		//Why this crazy statement?
+		// TODO Rewrite this statment using IN. Check if it work in SQLServer and PostgreSQL
+		$cids = $this->_db->qn($k) . ' = ' . implode(' OR ' . $this->_db->qn($k) . ' = ', $cid);
 
 		$query->where('(' . $cids . ')');
 
@@ -1749,11 +1729,12 @@ class FOFTable extends JObject
 		{
 			if ($this->_db->getAffectedRows() == 1)
 			{
+				// TODO should we check for its return value?
 				$this->checkin($cid[0]);
 
 				if ($this->$k == $cid[0])
 				{
-					$this->published = $publish;
+					$this->$enabledName = $publish;
 				}
 			}
 		}
@@ -1766,7 +1747,9 @@ class FOFTable extends JObject
 	/**
 	 * Delete a record
 	 *
-	 * @param   integer  $oid  The primary key value of the item to delete
+	 * @param   integer $oid  The primary key value of the item to delete
+	 *
+	 * @throws  UnexpectedValueException
 	 *
 	 * @return  boolean  True on success
 	 */
@@ -1777,58 +1760,19 @@ class FOFTable extends JObject
 			$this->load($oid);
 		}
 
-		if (!$this->onBeforeDelete($oid))
-		{
-			return false;
-		}
-
 		$k  = $this->_tbl_key;
-		$pk = (is_null($oid)) ? $this->$k : $oid;
+		$pk = (!$oid) ? $this->$k : $oid;
 
 		// If no primary key is given, return false.
-
-		if ($pk === null)
+		if (!$pk)
 		{
 			throw new UnexpectedValueException('Null primary key not allowed.');
 		}
 
-		// If tracking assets, remove the asset first.
-
-		if ($this->_trackAssets)
+		// Execute the logic only if I have a primary key, otherwise I could have weird results
+		if (!$this->onBeforeDelete($oid))
 		{
-			// Get and the asset name.
-			$this->$k = $pk;
-			$name     = $this->_getAssetName();
-
-			// Do NOT touch JTable here -- we are loading the core asset table which is a JTable, not a FOFTable
-			$asset    = JTable::getInstance('Asset');
-
-			if ($asset->loadByName($name))
-			{
-				if (!$asset->delete())
-				{
-					$this->setError($asset->getError());
-
-					return false;
-				}
-			}
-			else
-			{
-				$this->setError($asset->getError());
-
-				return false;
-			}
-		}
-
-		// If this resource has tags, delete the tags first
-		if ($this->_has_tags)
-		{
-			if (!$this->_tagsHelper->deleteTagData($this, $pk))
-			{
-				$this->setError('Error deleting Tags');
-
-				return false;
-			}
+			return false;
 		}
 
 		// Delete the row by primary key.
@@ -1838,7 +1782,7 @@ class FOFTable extends JObject
 		$query->where($this->_tbl_key . ' = ' . $this->_db->q($pk));
 		$this->_db->setQuery($query);
 
-		// Check for a database error.
+		// @TODO Check for a database error.
 		$this->_db->execute();
 
 		$result = $this->onAfterDelete($oid);
@@ -2265,9 +2209,12 @@ class FOFTable extends JObject
 			return array();
 		}
 
+		$tables   = array();
+		$j_tables = array();
+		$j_fields = array();
+
 		// Get joined tables. Ignore FROM clause, since it should not be used (the starting point is the table "table")
-		$tables = array();
-		$joins  = $query->join;
+		$joins    = $query->join;
 
 		foreach ($joins as $join)
 		{
@@ -2275,17 +2222,34 @@ class FOFTable extends JObject
 		}
 
 		// Clean up table names
-
-		for ($i = 0; $i < count($tables); $i++)
+		foreach($tables as $table)
 		{
-			preg_match('#\#__.*?\s#', $tables[$i], $matches);
-			$tables[$i] = str_replace(' ', '', $matches[0]);
+			preg_match('#(.*)((\w)*(on|using))(.*)#i', $table, $matches);
+
+			if($matches && isset($matches[1]))
+			{
+				// I always want the first part, no matter what
+				$parts = explode(' ', $matches[1]);
+				$t_table = $this->_db->qn(trim($parts[0]));
+
+				if(!in_array($t_table, $j_tables))
+				{
+					$j_tables[] =  substr($t_table, 1, strlen($t_table) - 2);
+				}
+			}
+		}
+
+		// Do I have the current table inside the query join? Remove it (its fields are already ok)
+		$find = array_search($this->getTableName(), $j_tables);
+		if($find !== false)
+		{
+			unset($j_tables[$find]);
 		}
 
 		// Get table fields
 		$fields = array();
 
-		foreach ($tables as $table)
+		foreach ($j_tables as $table)
 		{
 			$t_fields = $this->getTableFields($table);
 
@@ -2303,11 +2267,10 @@ class FOFTable extends JObject
 			$j_fields = $this->normalizeSelectFields($j_select->getElements());
 		}
 
-		// Flip the array so I can intesect the keys
-		$fields = array_intersect_key($fields, $j_fields);
+		// I can intesect the keys
+		$fields   = array_intersect_key($fields, $j_fields);
 
 		// Now I walk again the array to change the key of columns that have an alias
-
 		foreach ($j_fields as $column => $alias)
 		{
 			if ($column != $alias)
@@ -2321,16 +2284,16 @@ class FOFTable extends JObject
 	}
 
 	/**
-	 * Normalizes the fields, returning an array with all the fields.
-	 * Ie array('foobar, foo') becomes array('foobar', 'foo')
+	 * Normalizes the fields, returning an associative array with all the fields.
+	 * Ie array('foobar as foo, bar') becomes array('foobar' => 'foo', 'bar' => 'bar')
 	 *
-	 * @param   array    $fields    Array with column fields
-	 * @param   boolean  $useAlias  Should I use the column alias or use the extended syntax?
+	 * @param   array $fields    Array with column fields
 	 *
 	 * @return  array  Normalized array
 	 */
-	protected function normalizeSelectFields($fields, $extended = false)
+	protected function normalizeSelectFields($fields)
 	{
+		$db     = JFactory::getDbo();
 		$return = array();
 
 		foreach ($fields as $field)
@@ -2339,12 +2302,38 @@ class FOFTable extends JObject
 
 			foreach ($t_fields as $t_field)
 			{
-				// Is there any alias for this column?
-				preg_match('#\sas\s`?\w+`?#i', $t_field, $match);
-				$alias = empty($match) ? '' : $match[0];
-				$alias = preg_replace('#\sas\s?#i', '', $alias);
+				// Is there any alias?
+				$parts  = preg_split('#\sas\s#i', $t_field);
 
-				// Grab the "standard" name
+				// Do I have a table.column situation? Let's get the field name
+				$tableField  = explode('.', $parts[0]);
+
+				if(isset($tableField[1]))
+				{
+					$column = $tableField[1];
+				}
+				else
+				{
+					$column = $tableField[0];
+				}
+
+				// Always quote it, so I can safely remove the first and last char
+				$column = $db->qn(trim($column));
+				$column = substr($column, 1, strlen($column) - 2);
+
+				if(isset($parts[1]))
+				{
+					$alias = $db->qn(trim($parts[1]));
+					$alias = substr($alias, 1, strlen($alias) - 2);
+				}
+				else
+				{
+					$alias = $column;
+				}
+
+				$return[$column] = $alias;
+
+				/*// Grab the "standard" name
 				// @TODO Check this pattern since it's blind copied from forums
 				preg_match('/([\w]++)`?+(?:\s++as\s++[^,\s]++)?+\s*+($)/i', $t_field, $match);
 				$column = $match[1];
@@ -2366,7 +2355,7 @@ class FOFTable extends JObject
 					$alias = $column;
 				}
 
-				$return[$column] = $alias;
+				$return[$column] = $alias;*/
 			}
 		}
 
@@ -2398,6 +2387,15 @@ class FOFTable extends JObject
 	 */
 	protected function onBeforeBind(&$from)
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onBeforeBind', array(&$this, &$from));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2426,6 +2424,15 @@ class FOFTable extends JObject
 	 */
 	protected function onAfterLoad(&$result)
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onAfterLoad', array(&$this, &$result));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2551,11 +2558,63 @@ class FOFTable extends JObject
 			$this->$slug = $newSlug;
 		}
 
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onBeforeStore', array(&$this, $updateNulls));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		// Execute onBeforeStore<tablename> events in loaded plugins
 		if ($this->_trigger_events)
 		{
 			$name       = FOFInflector::pluralize($this->getKeyName());
 			$result     = FOFPlatform::getInstance()->runPlugins('onBeforeStore' . ucfirst($name), array(&$this, $updateNulls));
+
+			if (in_array(false, $result, true))
+			{
+				return false;
+			}
+			else
+			{
+				return true;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * The event which runs after binding data to the class
+	 *
+	 * @param   object|array  &$src  The data to bind
+	 * 
+	 * @return  boolean  True to allow binding without an error
+	 */
+	protected function onAfterBind(&$src)
+	{
+		// Call the behaviors
+		$options = array(
+			'component' 	=> $this->input->get('option'),
+			'view'			=> $this->input->get('view'),
+			'table_prefix'	=> $this->_tablePrefix
+		);
+
+		$result = $this->tableDispatcher->trigger('onAfterBind', array(&$this, &$src, $options));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
+		if ($this->_trigger_events)
+		{
+			$name = FOFInflector::pluralize($this->getKeyName());
+
+			$result     = FOFPlatform::getInstance()->runPlugins('onAfterBind' . ucfirst($name), array(&$this, &$src));
 
 			if (in_array(false, $result, true))
 			{
@@ -2577,6 +2636,15 @@ class FOFTable extends JObject
 	 */
 	protected function onAfterStore()
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onAfterStore', array(&$this));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2605,6 +2673,15 @@ class FOFTable extends JObject
 	 */
 	protected function onBeforeMove($updateNulls)
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onBeforeMove', array(&$this, $updateNulls));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2631,6 +2708,15 @@ class FOFTable extends JObject
 	 */
 	protected function onAfterMove()
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onAfterMove', array(&$this));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2659,6 +2745,15 @@ class FOFTable extends JObject
 	 */
 	protected function onBeforeReorder($where = '')
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onBeforeReorder', array(&$this, $where));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2685,6 +2780,15 @@ class FOFTable extends JObject
 	 */
 	protected function onAfterReorder()
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onAfterReorder', array(&$this));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2713,6 +2817,15 @@ class FOFTable extends JObject
 	 */
 	protected function onBeforeDelete($oid)
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onBeforeDelete', array(&$this, $oid));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2741,6 +2854,15 @@ class FOFTable extends JObject
 	 */
 	protected function onAfterDelete($oid)
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onAfterDelete', array(&$this, $oid));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2770,6 +2892,15 @@ class FOFTable extends JObject
 	 */
 	protected function onBeforeHit($oid, $log)
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onBeforeHit', array(&$this, $oid, $log));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2798,6 +2929,15 @@ class FOFTable extends JObject
 	 */
 	protected function onAfterHit($oid)
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onAfterHit', array(&$this, $oid));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2826,6 +2966,15 @@ class FOFTable extends JObject
 	 */
 	protected function onBeforeCopy($oid)
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onBeforeCopy', array(&$this, $oid));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2854,6 +3003,15 @@ class FOFTable extends JObject
 	 */
 	protected function onAfterCopy($oid)
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onAfterCopy', array(&$this, $oid));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2883,6 +3041,15 @@ class FOFTable extends JObject
 	 */
 	protected function onBeforePublish(&$cid, $publish)
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onBeforePublish', array(&$this, &$cid, $publish));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2909,6 +3076,15 @@ class FOFTable extends JObject
 	 */
 	protected function onAfterReset()
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onAfterReset', array(&$this));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -2935,6 +3111,15 @@ class FOFTable extends JObject
 	 */
 	protected function onBeforeReset()
 	{
+		// Call the behaviors
+		$result = $this->tableDispatcher->trigger('onBeforeReset', array(&$this));
+
+		if (in_array(false, $result, true))
+		{
+			// Behavior failed, return false
+			return false;
+		}
+
 		if ($this->_trigger_events)
 		{
 			$name = FOFInflector::pluralize($this->getKeyName());
@@ -3014,6 +3199,27 @@ class FOFTable extends JObject
 		return self::$_includePaths;
 	}
 
+	/**
+	 * Loads the asset table related to this table.
+	 * This will help tests, too, since we can mock this function.
+	 *
+	 * @return bool|JTableAsset     False on failure, otherwise JTableAsset
+	 */
+	protected function getAsset()
+	{
+		$name     = $this->_getAssetName();
+
+		// Do NOT touch JTable here -- we are loading the core asset table which is a JTable, not a FOFTable
+		$asset    = JTable::getInstance('Asset');
+
+		if (!$asset->loadByName($name))
+		{
+			return false;
+		}
+
+		return $asset;
+	}
+
     /**
      * Method to compute the default name of the asset.
      * The default name is in the form table_name.id
@@ -3023,7 +3229,7 @@ class FOFTable extends JObject
      *
      * @return  string
      */
-	protected function _getAssetName()
+	public function getAssetName()
 	{
 		$k = $this->_tbl_key;
 
@@ -3037,6 +3243,20 @@ class FOFTable extends JObject
 	}
 
 	/**
+     * Method to compute the default name of the asset.
+     * The default name is in the form table_name.id
+     * where id is the value of the primary key of the table.
+     *
+     * @throws  UnexpectedValueException
+     *
+     * @return  string
+     */
+	public function getAssetKey()
+	{
+		return $this->_assetKey;
+	}
+
+	/**
 	 * Method to return the title to use for the asset table.  In
 	 * tracking the assets a title is kept for each asset so that there is some
 	 * context available in a unified access manager.  Usually this would just
@@ -3045,9 +3265,9 @@ class FOFTable extends JObject
 	 *
 	 * @return  string  The string to use as the title in the asset table.
 	 */
-	protected function _getAssetTitle()
+	public function getAssetTitle()
 	{
-		return $this->_getAssetName();
+		return $this->getAssetName();
 	}
 
 	/**
@@ -3062,7 +3282,7 @@ class FOFTable extends JObject
 	 *
 	 * @return  integer
 	 */
-	protected function _getAssetParentId($table = null, $id = null)
+	public function getAssetParentId($table = null, $id = null)
 	{
 		// For simple cases, parent to the asset root.
 		$assets = JTable::getInstance('Asset', 'JTable', array('dbo' => $this->getDbo()));
@@ -3288,110 +3508,9 @@ class FOFTable extends JObject
 		return true;
 	}
 
-	/**
-	 * Check if a UCM content type exists for this resource, and
-	 * create it if it does not
-	 */
-	protected function checkContentType()
+	public function setConfig(array $config)
 	{
-		$contentType = new JTableContenttype($this->_db);
-
-		$alias = $this->getContentType();
-
-		// Fetch the extension name
-		$component = JComponentHelper::getComponent($component);
-
-		// Fetch the name using the menu item
-		$query = $this->_db->getQuery(true);
-		$query->select('title')->from('#__menu')->where('component_id = ' . (int) $component->id);
-		$this->_db->setQuery($query);
-		$component_name = JText::_($this->_db->loadResult());
-
-		$name = $component_name . ' ' . ucfirst($view);
-
-		// Create a new content type for our resource
-		if (!$contentType->load(array('type_alias' => $alias)))
-		{
-			$contentType->type_title = $name;
-			$contentType->type_alias = $alias;
-			$contentType->table = json_encode(
-				array(
-					'special' => array(
-						'dbtable' => $this->_tbl,
-						'key'     => $this->_tbl_key,
-						'type'    => $name,
-						'prefix'  => $this->_tablePrefix,
-						'config' => 'array()'
-					),
-					'common' => array(
-						'dbtable' => '#__ucm_content',
-						'key' => 'ucm_id',
-						'type' => 'CoreContent',
-						'prefix' => 'JTable',
-						'config' => 'array()'
-					)
-				)
-			);
-
-			$contentType->field_mappings = json_encode(
-				array(
-					'common' => array(
-						0 => array(
-							"core_content_item_id" => $this->_tbl_key,
-							"core_title"           => $this->getUcmCoreAlias('title'),
-							"core_state"           => $this->getUcmCoreAlias('enabled'),
-							"core_alias"           => $this->getUcmCoreAlias('alias'),
-							"core_created_time"    => $this->getUcmCoreAlias('created_on'),
-							"core_modified_time"   => $this->getUcmCoreAlias('created_by'),
-							"core_body"            => $this->getUcmCoreAlias('body'),
-							"core_hits"            => $this->getUcmCoreAlias('hits'),
-							"core_publish_up"      => $this->getUcmCoreAlias('publish_up'),
-							"core_publish_down"    => $this->getUcmCoreAlias('publish_down'),
-							"core_access"          => $this->getUcmCoreAlias('access'),
-							"core_params"          => $this->getUcmCoreAlias('params'),
-							"core_featured"        => $this->getUcmCoreAlias('featured'),
-							"core_metadata"        => $this->getUcmCoreAlias('metadata'),
-							"core_language"        => $this->getUcmCoreAlias('language'),
-							"core_images"          => $this->getUcmCoreAlias('images'),
-							"core_urls"            => $this->getUcmCoreAlias('urls'),
-							"core_version"         => $this->getUcmCoreAlias('version'),
-							"core_ordering"        => $this->getUcmCoreAlias('ordering'),
-							"core_metakey"         => $this->getUcmCoreAlias('metakey'),
-							"core_metadesc"        => $this->getUcmCoreAlias('metadesc'),
-							"core_catid"           => $this->getUcmCoreAlias('cat_id'),
-							"core_xreference"      => $this->getUcmCoreAlias('xreference'),
-							"asset_id"             => $this->getUcmCoreAlias('asset_id')
-						)
-					),
-					'special' => array(
-						0 => array(
-						)
-					)
-				)
-			);
-
-			$contentType->router = '';
-
-			$contentType->store();
-		}
-	}
-
-	/**
-	 * Utility methods that fetches the column name for the field.
-	 * If it does not exists, returns a "null" string
-	 *
-	 * @return string The column name
-	 */
-	protected function getUcmCoreAlias($alias)
-	{
-		$alias = $this->getColumnAlias($alias);
-
-		if (in_array($alias, $this->getKnownFields()))
-		{
-			return $alias;
-		}
-
-		return "null";
+		$this->config = $config;
 	}
 
 	/**
@@ -3402,14 +3521,10 @@ class FOFTable extends JObject
 	public function getContentType()
 	{
 		$component = $this->input->get('option');
+
 		$view = FOFInflector::singularize($this->input->get('view'));
 		$alias = $component . '.' . $view;
 
 		return $alias;
-	}
-
-	public function setConfig(array $config)
-	{
-		$this->config = $config;
 	}
 }

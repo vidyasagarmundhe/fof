@@ -67,7 +67,7 @@
       <value>fourth-row</value>
       <value>0</value>
       <value>4</value>
-      <value>0</value>
+      <value>36</value>
       <value>42</value>
       <value>0000-00-00 00:00:00</value>
       <value>0</value>
@@ -193,6 +193,28 @@
       </row>
   </table>
 
+  <table name="jos_foftest_foobarjoins">
+      <column>foftest_id_foobarjoin</column>
+      <column>external_key</column>
+      <column>fj_title</column>
+      <column>fj_dummy</column>
+      <column>title</column>
+      <row>
+          <value>1</value>
+          <value>2</value>
+          <value>First row unique colum name</value>
+          <value>Dummy value for row 1</value>
+          <value>First row non-unique colum name</value>
+      </row>
+      <row>
+          <value>2</value>
+          <value>4</value>
+          <value>Second row unique colum name</value>
+          <value>Dummy value for row 2</value>
+          <value>Second row non-unique colum name</value>
+      </row>
+  </table>
+
   <table name="jos_session">
     <column>session_id</column>
     <column>client_id</column>
@@ -226,7 +248,7 @@
           <value>1</value>
           <value>0</value>
           <value>0</value>
-          <value>71</value>
+          <value>73</value>
           <value>0</value>
           <value>root.1</value>
           <value>Root Asset</value>
@@ -571,6 +593,16 @@
           <value>com_tags</value>
           <value>com_tags</value>
           <value>{&quot;core.admin&quot;:[],&quot;core.manage&quot;:[],&quot;core.manage&quot;:[],&quot;core.delete&quot;:[],&quot;core.edit.state&quot;:[]}</value>
+      </row>
+      <row>
+          <value>36</value>
+          <value>1</value>
+          <value>71</value>
+          <value>72</value>
+          <value>1</value>
+          <value>com_foftest.foobar.4</value>
+          <value>com_foftest.foobar.4</value>
+          <value/>
       </row>
   </table>
 </dataset>
